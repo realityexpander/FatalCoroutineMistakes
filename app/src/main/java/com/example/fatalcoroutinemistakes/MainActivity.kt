@@ -15,16 +15,26 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.lifecycleScope
 import com.example.fatalcoroutinemistakes.ui.theme.FatalCoroutineMistakesTheme
 import kotlinx.coroutines.*
+import kotlin.random.Random
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val userIds = listOf(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
-        var userFirstNames = listOf<String>()
+//        var userFirstNames = listOf<String>()
+//        lifecycleScope.launch {
+//            userFirstNames = getUserFirstNames(userIds)
+//            println("userFirstnames: $userFirstNames")
+//        }
+
+        // Mistake #2 example - use of CancellationExceptions
         lifecycleScope.launch {
-            userFirstNames = getUserFirstNames(userIds)
-            println("userFirstnames: $userFirstNames")
+            try {
+                doSomething()
+            } catch (e: CancellationException) {
+                println("main CancellationException: $e") // this will not be printed
+            }
         }
 
         setContent {
@@ -78,8 +88,32 @@ suspend fun getFirstName(userId: Int): String {
     return "John $userId"
 }
 
-// Mistake #2
+// Mistake #2 - dont check for cancellation
+suspend fun doSomething() {
+    println("doSomething")
+    var random: Int = 0
 
+    val job = CoroutineScope(Dispatchers.IO).launch {
+        try {
+            random = Random.nextInt(5_000_000)
+
+            while (random != 50_000) {
+            // while(random != 50_000 && isActive) { // check for cancellation
+                random = Random.nextInt(5_000_000)
+                // if(!isActive) return@launch // check for cancellation
+                ensureActive()  // throws cancellation exception if cancelled
+            }
+        } catch (e: CancellationException) {
+            println("job CancellationException: $e") // *NOT* passed to parent coroutine
+        } finally {
+            println("done, isActive: $isActive, random: $random")
+        }
+
+    }
+    delay(500L)
+    println("Job Cancelled...")
+    job.cancel()
+}
 
 
 @Composable
