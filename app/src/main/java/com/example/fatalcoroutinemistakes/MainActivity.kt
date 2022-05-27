@@ -1,23 +1,32 @@
 package com.example.fatalcoroutinemistakes
 
 import android.os.Bundle
+import android.view.View
+import android.widget.Button
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.activity.viewModels
+import androidx.compose.foundation.layout.*
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.LifecycleCoroutineScope
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.viewModelScope
 import com.example.fatalcoroutinemistakes.ui.theme.FatalCoroutineMistakesTheme
 import kotlinx.coroutines.*
 import kotlin.random.Random
 
 class MainActivity : ComponentActivity() {
+    private val viewModel: MainViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -28,12 +37,21 @@ class MainActivity : ComponentActivity() {
 //            println("userFirstnames: $userFirstNames")
 //        }
 
-        // Mistake #2 example - use of CancellationExceptions
+        // Mistake #2 driver - use of CancellationExceptions
         lifecycleScope.launch {
             try {
                 doSomething()
             } catch (e: CancellationException) {
                 println("main CancellationException: $e") // this will not be printed
+            }
+        }
+
+        // Mistake #3 example
+        lifecycleScope.launch {
+            try {
+                doNetworkCall()
+            } catch (e: Exception) {
+                println("main exception: $e") // this will not be printed
             }
         }
 
@@ -45,13 +63,40 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colors.background
                 ) {
-                    var names by remember { mutableStateOf(listOf<String>()) }
+                    Column {
 
-                    LaunchedEffect(Unit) {
-                        names = getUserFirstNames(userIds)
+                        // Example #1 driver
+                        var names by remember { mutableStateOf(listOf<String>()) }
+                        LaunchedEffect(Unit) {
+                            names = getUserFirstNames(userIds)
+                        }
+                        Output("FirstNames: $names")
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Example #3 driver
+                        var networkResult by remember { mutableStateOf(Result.success("Pending")) }
+                        LaunchedEffect(Unit) {
+                            networkResult = doNetworkCall()
+                        }
+                        Output("NetworkResult: $networkResult")
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Example #4 driver
+                        var calcResult by remember { mutableStateOf("") }
+                        LaunchedEffect(Unit) {
+                            try {
+                                calcResult = riskyTask()
+                            } catch (e: Exception) {
+                                calcResult = "CalcResult in main exception: $e"
+                            }
+                        }
+                        Output("CalcResult: $calcResult")
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Example #5 driver
+                        xmlInCompose(viewModel, lifecycleScope)
+
                     }
-
-                    Greeting(names.toString())
 
                 }
             }
@@ -88,6 +133,8 @@ suspend fun getFirstName(userId: Int): String {
     return "John $userId"
 }
 
+////////////////////////////////////////////////////////////////////////////
+
 // Mistake #2 - dont check for cancellation
 suspend fun doSomething() {
     println("doSomething")
@@ -98,7 +145,7 @@ suspend fun doSomething() {
             random = Random.nextInt(5_000_000)
 
             while (random != 50_000) {
-            // while(random != 50_000 && isActive) { // check for cancellation
+                // while(random != 50_000 && isActive) { // check for cancellation
                 random = Random.nextInt(5_000_000)
                 // if(!isActive) return@launch // check for cancellation
                 ensureActive()  // throws cancellation exception if cancelled
@@ -115,16 +162,115 @@ suspend fun doSomething() {
     job.cancel()
 }
 
+////////////////////////////////////////////////////////////////////////////
+
+// Mistake #3 - network call is not main safe
+suspend fun doNetworkCall(): Result<String> {
+    var result = networkCall()
+    return if (result == "Success") {
+        Result.success("Success")
+    } else {
+        Result.failure(Exception("Error"))
+    }
+}
+
+suspend fun networkCall(): String {
+    // Problem - this is not main safe
+//    delay(1000)
+//    return if (Random.nextBoolean()) "Success" else "Error"
+
+    // Solution - this is main safe (room and retrofit already do this)
+    return withContext(Dispatchers.IO) {
+        delay(500)
+        if (Random.nextBoolean()) "Success" else "Error"
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+// Mistake #4 - Suspend function catch CancellationExceptions
+suspend fun riskyTask(): String {
+    // throw CancellationException("Cancelled") // *WILL* be passed to parent coroutine
+
+
+//    // Problem - cancellationExceptions are not thrown to parent
+//    return try {
+//        delay(1000)
+//        "The answer is ${10/0}"
+//    } catch (e: Exception) {
+//        "Error in riskyTask" // parent scope *NOT* notified about ArithmeticException
+//    }
+
+    // Solution - cancellationExceptions are thrown to parent
+    return try {
+        delay(1000)
+
+        // simulate job cancellation
+        throw CancellationException("Cancelled") // will *NOT* be passed to parent coroutine, will be caught below
+
+        // simulate math error
+        "The answer is ${10 / 0}"
+    } catch (e: ArithmeticException) {
+        "from RiskyTask: ArithmeticException: $e" // parent scope *NOT* notified about ArithmeticException
+    } catch (e: CancellationException) {
+        "from RiskyTask: CancellationException: $e"
+        throw e // solution: *WILL* be passed to parent coroutine
+    } catch (e: Exception) {
+        "from RiskyTask: Error in riskyTask: $e" // parent scope *NOT* notified about cancellation or math error
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+// Mistake #5 - xml in compose
+class MainViewModel : ViewModel() {
+
+//    suspend fun postValueToApi() { // problem: ViewModel should not expose suspending functions to the UI, bc the lifetime of this suspend function is not bound to the lifecycle of the view
+//        delay(1000)
+//        println("postValueToApi")
+//    }
+
+    fun postValueToApi(button: Button) {
+        viewModelScope.launch {  // bound to the lifetime scope of the viewModel
+            delay(1000)
+            println("postValueToApi")
+            button.text = "Posted!" // not safe to do this, but here for demo purposes
+        }
+    }
+}
+
 
 @Composable
-fun Greeting(name: String) {
-    Text(text = "Hello $name!")
+fun Output(data: String) {
+    Text(text = "Output= $data!")
 }
 
 @Preview(showBackground = true)
 @Composable
 fun DefaultPreview() {
     FatalCoroutineMistakesTheme {
-        Greeting("Android")
+        Output("pending...")
     }
+}
+
+@Composable
+fun xmlInCompose(viewModel: MainViewModel, lifeCycleScope: LifecycleCoroutineScope) {
+    AndroidView(factory = {
+        View.inflate(it, R.layout.button_layout, null)
+    },
+        modifier = Modifier.fillMaxSize(),
+        update = {
+            val button = it.findViewById<Button>(R.id.button)
+            button.setOnClickListener { view ->
+                Toast.makeText(view.context, "Posting to Api", Toast.LENGTH_SHORT).show()
+//                lifeCycleScope.launch { // Problem: Call will be sent successfully, but if during a config change, the coroutine will be cancelled (not good)
+//                    viewModel.postValueToApi()
+//                }
+
+                // Solution: Make the call in the coroutine scope of the ViewModel
+                viewModel.postValueToApi(button)
+                button.text = "Posting..."
+            }
+        }
+    )
 }
