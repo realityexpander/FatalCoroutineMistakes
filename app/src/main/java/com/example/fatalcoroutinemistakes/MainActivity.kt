@@ -28,6 +28,9 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlin.random.Random
 
+// from Philip Lackner - 5 Fatal Coroutine Mistakes Nobody Tells You About
+// https://www.youtube.com/watch?v=cr5xLjPC4-0
+
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
 
@@ -109,9 +112,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-
-// from Philip Lackner - 5 Fatal Coroutine Mistakes Nobody Tells You About
-// https://www.youtube.com/watch?v=cr5xLjPC4-0
 
 // Mistake #1 - dont need to do things sequentially here
 suspend fun getUserFirstNames(userIds: List<Int>): List<String> {
