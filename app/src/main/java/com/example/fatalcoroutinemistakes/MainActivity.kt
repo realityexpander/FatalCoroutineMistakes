@@ -7,7 +7,10 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Surface
 import androidx.compose.material.Text
@@ -22,6 +25,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewModelScope
 import com.example.fatalcoroutinemistakes.ui.theme.FatalCoroutineMistakesTheme
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlin.random.Random
 
 class MainActivity : ComponentActivity() {
@@ -63,8 +67,9 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colors.background
                 ) {
-                    Column {
+                    val userState by viewModel.userState.collectAsState()
 
+                    Column {
                         // Example #1 driver
                         var names by remember { mutableStateOf(listOf<String>()) }
                         LaunchedEffect(Unit) {
@@ -94,7 +99,7 @@ class MainActivity : ComponentActivity() {
                         Spacer(modifier = Modifier.height(16.dp))
 
                         // Example #5 driver
-                        xmlInCompose(viewModel, lifecycleScope)
+                        xmlInCompose(viewModel, lifecycleScope, userState)
 
                     }
 
@@ -222,13 +227,20 @@ suspend fun riskyTask(): String {
 
 ////////////////////////////////////////////////////////////////////////////
 
-// Mistake #5 - xml in compose
+// Mistake #5 - Exposing Viewmodel suspending functions to the UI lifecycle
 class MainViewModel : ViewModel() {
 
-//    suspend fun postValueToApi() { // problem: ViewModel should not expose suspending functions to the UI, bc the lifetime of this suspend function is not bound to the lifecycle of the view
+    // problem: ViewModel should *NOT* expose suspending functions to the UI, bc the lifetime of this suspend function is not bound to the lifecycle of the view
+//    suspend fun postValueToApi() {
 //        delay(1000)
 //        println("postValueToApi")
 //    }
+
+    val userState = MutableStateFlow<UserState>(UserState.StartState)
+
+    init {
+        userState.value = UserState.StartState
+    }
 
     fun postValueToApi(button: Button) {
         viewModelScope.launch {  // bound to the lifetime scope of the viewModel
@@ -237,6 +249,30 @@ class MainViewModel : ViewModel() {
             button.text = "Posted!" // not safe to do this, but here for demo purposes
         }
     }
+
+    suspend fun postValueToApi2(): String {
+        return viewModelScope.async {  // bound to the lifetime scope of the viewModel
+            delay(1000)
+            println("postValueToApi")
+            return@async "Posted!"
+        }.await()
+    }
+
+    fun postValueToApi3() {
+        viewModelScope.launch {  // bound to the lifetime scope of the viewModel
+            delay(1000)
+            println("postValueToApi")
+            //userState.value = UserState.Success  // works even if not in a coroutine
+            userState.tryEmit(UserState.Success) // for use in coroutines, respects buffer
+        }
+    }
+}
+
+sealed class UserState(val message: String) {
+    object StartState : UserState("Post Value to API")
+    object LoadingState : UserState("Posting...")
+    object Success : UserState("Success")
+    object Error : UserState("Error")
 }
 
 
@@ -254,7 +290,7 @@ fun DefaultPreview() {
 }
 
 @Composable
-fun xmlInCompose(viewModel: MainViewModel, lifeCycleScope: LifecycleCoroutineScope) {
+fun xmlInCompose(viewModel: MainViewModel, lifeCycleScope: LifecycleCoroutineScope, userState: UserState) {
     AndroidView(factory = {
         View.inflate(it, R.layout.button_layout, null)
     },
@@ -268,9 +304,18 @@ fun xmlInCompose(viewModel: MainViewModel, lifeCycleScope: LifecycleCoroutineSco
 //                }
 
                 // Solution: Make the call in the coroutine scope of the ViewModel
-                viewModel.postValueToApi(button)
-                button.text = "Posting..."
+//                viewModel.postValueToApi(button)
+//                button.text = "Posting..."
+                viewModel.userState.value = UserState.LoadingState // ok to set directly bc we are not in a coroutine
+                // viewModel.userState.emit(UserState.LoadingState) // for use in coroutines
+
+//                lifeCycleScope.launch {
+//                    button.text = viewModel.postValueToApi2() // gets value from the api call directly, problem: if config change values are reset.
+//                }
+
+                viewModel.postValueToApi3()
             }
+            button.text = userState.message
         }
     )
 }
