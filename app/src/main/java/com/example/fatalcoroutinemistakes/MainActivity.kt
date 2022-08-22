@@ -31,6 +31,13 @@ import kotlin.random.Random
 // from Philip Lackner - 5 Fatal Coroutine Mistakes Nobody Tells You About
 // https://www.youtube.com/watch?v=cr5xLjPC4-0
 
+// Notes:
+// - CoroutineScope is a scope that is tied to a custom coroutine.
+// - lifecycleScope is a scope that is tied to the lifecycle of the activity/fragment.
+//   - SHOULD BE NAMED `activityScope` or `fragmentScope` (GHAD DAMMIT!!!)
+// - viewModelScope is a scope that is tied to the lifecycle of the ViewModel.
+
+
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
 
@@ -113,7 +120,7 @@ class MainActivity : ComponentActivity() {
 }
 
 
-// Mistake #1 - dont need to do things sequentially here
+// Mistake #1 - Not doing tasks in parallel when they can be done in parallel.
 suspend fun getUserFirstNames(userIds: List<Int>): List<String> {
     // problem - will be executed in serial
     val firstNames = mutableListOf<String>()
@@ -194,7 +201,7 @@ suspend fun getFirstNameWithExceptions(userId: Int): String {
 
 ////////////////////////////////////////////////////////////////// 5//////////
 
-// Mistake #2 - Not checking for cancellation
+// Mistake #2 - Not checking for cancellation.
 suspend fun doSomething() {
     println("doSomething")
     var random: Int = 0
@@ -235,9 +242,10 @@ suspend fun doSomething() {
 
 ////////////////////////////////////////////////////////////////////////////
 
-// Mistake #3 - network call is not main safe
+// Mistake #3 - network call is not main safe.
 suspend fun doNetworkCall(): Result<String> {
-    var result = networkCall()
+    val result = networkCall()
+
     return if (result == "Success") {
         Result.success("Success")
     } else {
@@ -246,11 +254,11 @@ suspend fun doNetworkCall(): Result<String> {
 }
 
 suspend fun networkCall(): String {
-    // Problem - this is not main safe
-//    delay(1000)
+    // Problem - this is not main safe!
+//    delay(1000) // simulates network call
 //    return if (Random.nextBoolean()) "Success" else "Error"
 
-    // Solution - by using a dispatcher, this is main safe (room and retrofit already do this)
+    // Solution - by using a dispatcher, this is now main safe (room and retrofit already do this)
     return withContext(Dispatchers.IO) {
         delay(500)
         if (Random.nextBoolean()) "Success" else "Error"
@@ -272,7 +280,7 @@ suspend fun riskyTask(): String {
 //        "Error in riskyTask" // parent scope *NOT* notified about ArithmeticException
 //    }
 
-    // Solution - cancellationExceptions are thrown to parent
+    // Solution - cancellationExceptions are re-thrown to parent
     return try {
         delay(1000)
 
@@ -317,7 +325,7 @@ class MainViewModel : ViewModel() {
         apiCallState.value = ApiCallState.StartState
     }
 
-    // SOLUTION 1 - STILL A PROBLEM - DON'T DO THIS - View is passed (exposed) to the ViewModel
+    // EXAMPLE 1 - STILL A PROBLEM - DON'T DO THIS - View is passed (exposed) to the ViewModel
     fun postValueToApi1(button: Button) {
         viewModelScope.launch {  // bound to the lifecycle scope of the VIEWMODEL
             delay(2000)
@@ -327,7 +335,7 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    // SOLUTION 2 - STILL A PROBLEM - DON'T DO THIS - this solution exposes ViewModel suspending function to the UI lifecycle
+    // EXAMPLE 2 - STILL A PROBLEM - DON'T DO THIS - this solution exposes ViewModel suspending function to the UI lifecycle
     suspend fun postValueToApi2(): String {
         return viewModelScope.async {  // bound to the lifetime scope of the viewModel
             delay(2000)
@@ -338,16 +346,17 @@ class MainViewModel : ViewModel() {
                    //   the API return value WON'T be passed back because the View has been DESTROYED.
     }
 
-    // SOLUTION 3 - To return the API call value, emit to a flow instead of returning a value.
-    //              The Flow is bound to the lifecycle of the ViewModel and retains the value here.
+    // EXAMPLE 3 - SOLUTION
+    //   Return the API call value, via emitting to a flow instead of returning a value.
+    //   The Flow is bound to the lifecycle of the ViewModel and does not store values in the Activity/Fragment lifecycle.
     fun postValueToApi3() {
-        viewModelScope.launch {  // bound to the lifetime scope of the viewModel
+        viewModelScope.launch {  // bound to the lifecycle scope of the VIEWMODEL
             apiCallState.tryEmit(ApiCallState.LoadingState)
 
             delay(1000)
             println("postValueToApi")
-            //userState.value = UserState.Success  // setting .value works even if not in a coroutine.
-            apiCallState.tryEmit(ApiCallState.Success)   // .tryEmit is used from coroutines, respects buffer.
+            //apiCallState.value = ApiCallState.Success  // setting .value works even if not in a coroutine.
+            apiCallState.tryEmit(ApiCallState.Success)   // .tryEmit is used from coroutines, bc it respects the buffer.
         }
     }
 }
@@ -375,7 +384,7 @@ fun DefaultPreview() {
 @Composable
 fun XmlInCompose(
     viewModel: MainViewModel,
-    lifeCycleScope: LifecycleCoroutineScope,
+    lifecycleScope: LifecycleCoroutineScope,
     apiCallState: ApiCallState
 ) {
     AndroidView(factory = {
@@ -388,25 +397,25 @@ fun XmlInCompose(
                 Toast.makeText(view.context, "Posting to Api", Toast.LENGTH_SHORT).show()
 
 //                // PROBLEM - DON'T DO THIS - Calling the suspending function from the UI lifecycle.
-//                lifeCycleScope.launch {  // lifeCycle Scope is the ACTIVITY/FRAGMENT lifecycle scope
+//                lifecycleScope.launch {  // lifeCycle Scope is the ACTIVITY/FRAGMENT lifecycle scope
 //                    viewModel.postValueToApi() // PROBLEM: Call will be sent successfully, but during a
 //                                               //   config change the coroutine will be cancelled, cancelling the API call.
 //                }
 
-                // EXAMPLE 1 - STILL A PROBLEM - DON'T DO THIS: This makes the call in the coroutine scope of the ViewModel, and passes in the button view.
+//                // EXAMPLE 1 - STILL A PROBLEM - DON'T DO THIS: This makes the call in the coroutine scope of the ViewModel, and passes in the button view.
 //                viewModel.postValueToApi1(button) // Notice this passes in the button View. PROBLEM: This exposes the ViewModel suspending function to the UI lifecycle.
 //                button.text = "Posting..."        // If a config change occurs, the ACTIVITY/FRAGMENT will be destroyed, and the `button` will be invalid.
 
 
 //                // EXAMPLE 2 - STILL A PROBLEM - DON'T DO THIS: the value will not be returned from coroutine if the UI has a config change
-                lifeCycleScope.launch { // lifecycle scope of the ACTIVITY/FRAGMENT lifecycle scope
-                    button.text = viewModel.postValueToApi2() // Gets value from the api call as a return value OK, but PROBLEM: if a config change happens, values are reset.
-                }
+//                lifecycleScope.launch { // lifecycle scope of the ACTIVITY/FRAGMENT lifecycle scope
+//                    button.text = viewModel.postValueToApi2() // Gets value from the api call as a return value OK, but PROBLEM: if a config change happens, values are reset.
+//                }
 
-//                // EXAMPLE 3 - SOLUTION: Use a flow/Livedata instead of a return value.
-//                viewModel.apiCallState.value = ApiCallState.LoadingState // ok to set directly bc we are not in a coroutine.
-//                // viewModel.userState.emit(UserState.LoadingState) // can also use `emit`, but must be used in coroutines.
-//                viewModel.postValueToApi3()
+//              // EXAMPLE 3 - SOLUTION: Use a flow/Livedata instead of a return value.
+                viewModel.apiCallState.value = ApiCallState.LoadingState // ok to set directly bc we are not in a coroutine.
+                // viewModel.apiCallState.emit(ApiCallState.LoadingState) // can also use `emit`, MUST be used in coroutines.
+                viewModel.postValueToApi3()
             }
 
             // Show result of API call.
