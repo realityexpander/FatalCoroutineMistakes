@@ -117,28 +117,82 @@ class MainActivity : ComponentActivity() {
 suspend fun getUserFirstNames(userIds: List<Int>): List<String> {
     // problem - will be executed in serial
     val firstNames = mutableListOf<String>()
-//    for (userId in userIds) {
-//        firstNames.add(getFirstName(userId)) // problem - will be executed in serial
-//    }
+    for (userId in userIds) {
+        firstNames.add(getFirstName(userId)) // problem - will be executed in serial
+    }
 
     // solution - will be executed in parallel
     val firstNames2 = mutableListOf<Deferred<String>>()
     coroutineScope {
         for (userId in userIds) {
-            firstNames2.add(async { getFirstName(userId) }) // solution - will be setup to be executed in parallel
+            firstNames2.add(
+                async {
+                    getFirstName(userId)
+                }.also {
+                }
+            ) // solution - will be setup to be executed in parallel
         }
     }
 
+    // Alternative solution - will be executed in parallel, alternative to using a loop - using a map
+    val firstNames3 =
+        coroutineScope {
+            userIds.map { userId ->
+                async {
+                    getFirstName(userId + 100)
+                }.also {
+                }
+            }
+        }.also {
+        }.awaitAll()
+
+    // Alternative solution - executed in parallel, but allows for each item to cause exception
+    val firstNames4 =
+        coroutineScope {
+            userIds.map { userId ->
+                async {
+                    try {
+                        getFirstNameWithExceptions(userId + 1000)
+                    } catch (e: Exception) {
+                        println("Exception in getUserFirstNames: $e")
+                        "Error for id=${userId + 1000}: $e"
+                    }
+                }.also {
+                }
+            }.also{
+            }
+        }.also {
+        }.awaitAll()
+
+    println("firstNames: $firstNames")
+    println("firstNames2: ${firstNames2.awaitAll()}")
+    println("firstNames3: $firstNames3")
+    println("firstNames4: $firstNames4")
+
     //return firstNames
-    return firstNames2.awaitAll() // execute all the async calls in parallel, and wait until they are all done
+    //return firstNames2.awaitAll() // execute all the async calls in parallel, and wait until they are all done
+    return firstNames4 // execute all the async calls in parallel, and wait until they are all done
+
 }
 
 suspend fun getFirstName(userId: Int): String {
     delay(500)
+    println("getFirstName: $userId")
     return "John $userId"
 }
 
-////////////////////////////////////////////////////////////////////////////
+suspend fun getFirstNameWithExceptions(userId: Int): String {
+    delay(500)
+    println("getFirstName: $userId")
+
+    if (userId > 1005) {
+        throw Exception("userId > 505")
+    }
+
+    return "John $userId"
+}
+
+////////////////////////////////////////////////////////////////// 5//////////
 
 // Mistake #2 - dont check for cancellation
 suspend fun doSomething() {
@@ -290,7 +344,11 @@ fun DefaultPreview() {
 }
 
 @Composable
-fun xmlInCompose(viewModel: MainViewModel, lifeCycleScope: LifecycleCoroutineScope, userState: UserState) {
+fun xmlInCompose(
+    viewModel: MainViewModel,
+    lifeCycleScope: LifecycleCoroutineScope,
+    userState: UserState
+) {
     AndroidView(factory = {
         View.inflate(it, R.layout.button_layout, null)
     },
@@ -306,7 +364,8 @@ fun xmlInCompose(viewModel: MainViewModel, lifeCycleScope: LifecycleCoroutineSco
                 // Solution: Make the call in the coroutine scope of the ViewModel
 //                viewModel.postValueToApi(button)
 //                button.text = "Posting..."
-                viewModel.userState.value = UserState.LoadingState // ok to set directly bc we are not in a coroutine
+                viewModel.userState.value =
+                    UserState.LoadingState // ok to set directly bc we are not in a coroutine
                 // viewModel.userState.emit(UserState.LoadingState) // for use in coroutines
 
 //                lifeCycleScope.launch {
