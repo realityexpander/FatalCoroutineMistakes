@@ -119,8 +119,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-
+////////////////////////////////////////////////////////////////////////////////////
 // Mistake #1 - Not doing tasks in parallel when they can be done in parallel.
+
 suspend fun getUserFirstNames(userIds: List<Int>): List<String> {
     // problem - will be executed in serial
     val firstNames = mutableListOf<String>()
@@ -200,8 +201,8 @@ suspend fun getFirstNameWithExceptions(userId: Int): String {
 }
 
 ////////////////////////////////////////////////////////////////// 5//////////
-
 // Mistake #2 - Not checking for cancellation.
+
 suspend fun doSomething() {
     println("doSomething")
     var random: Int = 0
@@ -241,8 +242,8 @@ suspend fun doSomething() {
 }
 
 ////////////////////////////////////////////////////////////////////////////
+// Mistake #3 - Network calls are not main safe.
 
-// Mistake #3 - network call is not main safe.
 suspend fun doNetworkCall(): Result<String> {
     val result = networkCall()
 
@@ -255,7 +256,7 @@ suspend fun doNetworkCall(): Result<String> {
 
 suspend fun networkCall(): String {
     // Problem - this is not main safe!
-//    delay(1000) // simulates network call
+//    delay(1000) // simulates network call, could be cancelled on config change
 //    return if (Random.nextBoolean()) "Success" else "Error"
 
     // Solution - by using a dispatcher, this is now main safe (room and retrofit already do this)
@@ -266,26 +267,25 @@ suspend fun networkCall(): String {
 }
 
 ////////////////////////////////////////////////////////////////////////////
+// Mistake #4 - Suspend function with try/catches must specifically handle CancellationExceptions
 
-// Mistake #4 - Suspend function catch CancellationExceptions
 suspend fun riskyTask(): String {
     // throw CancellationException("Cancelled") // *WILL* be passed to parent coroutine
 
-
-//    // Problem - cancellationExceptions are not thrown to parent
+//    // Problem - CancellationExceptions in try/catch blocks are NOT thrown to parent
 //    return try {
 //        delay(1000)
 //        "The answer is ${10/0}"
-//    } catch (e: Exception) {
+//    } catch (e: Exception) {  // This will catch ALL exceptions.
 //        "Error in riskyTask" // parent scope *NOT* notified about ArithmeticException
 //    }
 
-    // Solution - cancellationExceptions are re-thrown to parent
+    // SOLUTION - CancellationExceptions are re-thrown to parent in catch block.
     return try {
         delay(1000)
 
         // simulate job cancellation
-        throw CancellationException("Cancelled") // will *NOT* be passed to parent coroutine, will be caught below
+        throw CancellationException("Cancelled") // PROBLEM: will *NOT* be passed to parent coroutine, when be caught below.
 
         // simulate math error
         "The answer is ${10 / 0}"
@@ -293,15 +293,15 @@ suspend fun riskyTask(): String {
         "from RiskyTask: ArithmeticException: $e" // parent scope *NOT* notified about ArithmeticException
     } catch (e: CancellationException) { // SPECIFICALLY catch cancellation exceptions
         "from RiskyTask: CancellationException: $e"
-        throw e // solution: *WILL* be passed to parent coroutine (re-thrown)
+        throw e // SOLUTION: CancellationException *WILL* be re-thrown to parent coroutine
     } catch (e: Exception) {
         "from RiskyTask: Error in riskyTask: $e" // parent scope *NOT* notified about cancellation or math error
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////
-
 // Mistake #5 - Exposing Viewmodel suspending functions to the UI (Activity/Fragment) lifecycle
+
 class MainViewModel : ViewModel() {
 
     // PROBLEM: ViewModel should *NOT* expose suspend functions to the UI, bc
