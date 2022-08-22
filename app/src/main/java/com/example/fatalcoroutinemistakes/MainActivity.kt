@@ -70,7 +70,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colors.background
                 ) {
-                    val userState by viewModel.userState.collectAsState()
+                    val userState by viewModel.apiCallState.collectAsState()
 
                     Column {
                         // Example #1 driver
@@ -102,7 +102,7 @@ class MainActivity : ComponentActivity() {
                         Spacer(modifier = Modifier.height(16.dp))
 
                         // Example #5 driver
-                        xmlInCompose(viewModel, lifecycleScope, userState)
+                        XmlInCompose(viewModel, lifecycleScope, userState)
 
                     }
 
@@ -194,10 +194,22 @@ suspend fun getFirstNameWithExceptions(userId: Int): String {
 
 ////////////////////////////////////////////////////////////////// 5//////////
 
-// Mistake #2 - dont check for cancellation
+// Mistake #2 - Not checking for cancellation
 suspend fun doSomething() {
     println("doSomething")
     var random: Int = 0
+
+//    // ** DON'T DO THIS **
+//    val badJob = CoroutineScope(Dispatchers.IO).launch {
+//        random = Random.nextInt(100_000)
+//        while(random != 50000) {
+//            random = Random.nextInt(100_000)
+//            // NOTICE: Not checking for cancellation
+//        }
+//    }
+//    delay(500L)
+//    println("Job Cancelled...")
+//    badJob.cancel()
 
     val job = CoroutineScope(Dispatchers.IO).launch {
         try {
@@ -238,7 +250,7 @@ suspend fun networkCall(): String {
 //    delay(1000)
 //    return if (Random.nextBoolean()) "Success" else "Error"
 
-    // Solution - this is main safe (room and retrofit already do this)
+    // Solution - by using a dispatcher, this is main safe (room and retrofit already do this)
     return withContext(Dispatchers.IO) {
         delay(500)
         if (Random.nextBoolean()) "Success" else "Error"
@@ -271,9 +283,9 @@ suspend fun riskyTask(): String {
         "The answer is ${10 / 0}"
     } catch (e: ArithmeticException) {
         "from RiskyTask: ArithmeticException: $e" // parent scope *NOT* notified about ArithmeticException
-    } catch (e: CancellationException) {
+    } catch (e: CancellationException) { // SPECIFICALLY catch cancellation exceptions
         "from RiskyTask: CancellationException: $e"
-        throw e // solution: *WILL* be passed to parent coroutine
+        throw e // solution: *WILL* be passed to parent coroutine (re-thrown)
     } catch (e: Exception) {
         "from RiskyTask: Error in riskyTask: $e" // parent scope *NOT* notified about cancellation or math error
     }
@@ -281,54 +293,71 @@ suspend fun riskyTask(): String {
 
 ////////////////////////////////////////////////////////////////////////////
 
-// Mistake #5 - Exposing Viewmodel suspending functions to the UI lifecycle
+// Mistake #5 - Exposing Viewmodel suspending functions to the UI (Activity/Fragment) lifecycle
 class MainViewModel : ViewModel() {
 
-    // problem: ViewModel should *NOT* expose suspending functions to the UI, bc the lifetime of this suspend function is not bound to the lifecycle of the view
-//    suspend fun postValueToApi() {
-//        delay(1000)
-//        println("postValueToApi")
-//    }
+    // PROBLEM: ViewModel should *NOT* expose suspend functions to the UI, bc
+    //   the lifecycle of this suspend function is STILL bound to the lifecycle of the UI (Activity/Fragment)
+    //   because the UI was the one that called it from the UI lifecycle scope.
+    suspend fun postValueToApi() {
+        apiCallState.tryEmit(ApiCallState.LoadingState)
 
-    val userState = MutableStateFlow<UserState>(UserState.StartState)
+        delay(1000) //  if config change occurs, the coroutine will be cancelled and the apiCallState will not be updated.
+        println("postValueToApi")
+
+        apiCallState.tryEmit(ApiCallState.Success)   // .tryEmit is used from coroutines, respects buffer.
+    }
+
+    // Note: to launch a coroutine that lasts longer than the ViewModel, you need to use a CoroutineScope:
+    val longLivingCoroutineScope = CoroutineScope(Dispatchers.Main) // remember to cancel any jobs in the scope when finished
+
+    val apiCallState = MutableStateFlow<ApiCallState>(ApiCallState.StartState)
 
     init {
-        userState.value = UserState.StartState
+        apiCallState.value = ApiCallState.StartState
     }
 
-    fun postValueToApi(button: Button) {
-        viewModelScope.launch {  // bound to the lifetime scope of the viewModel
-            delay(1000)
+    // SOLUTION 1 - STILL A PROBLEM - DON'T DO THIS - View is passed (exposed) to the ViewModel
+    fun postValueToApi1(button: Button) {
+        viewModelScope.launch {  // bound to the lifecycle scope of the VIEWMODEL
+            delay(2000)
+
             println("postValueToApi")
-            button.text = "Posted!" // not safe to do this, but here for demo purposes
+            button.text = "Posted!" // not safe to do this bc activity may be destroyed during config change, but here for demo purposes
         }
     }
 
+    // SOLUTION 2 - STILL A PROBLEM - DON'T DO THIS - this solution exposes ViewModel suspending function to the UI lifecycle
     suspend fun postValueToApi2(): String {
         return viewModelScope.async {  // bound to the lifetime scope of the viewModel
-            delay(1000)
+            delay(2000)
+
             println("postValueToApi")
             return@async "Posted!"
-        }.await()
+        }.await()  // Call will complete OK, but if the view is destroyed during config change,
+                   //   the API return value WON'T be passed back because the View has been DESTROYED.
     }
 
+    // SOLUTION 3 - To return the API call value, emit to a flow instead of returning a value.
+    //              The Flow is bound to the lifecycle of the ViewModel and retains the value here.
     fun postValueToApi3() {
         viewModelScope.launch {  // bound to the lifetime scope of the viewModel
+            apiCallState.tryEmit(ApiCallState.LoadingState)
+
             delay(1000)
             println("postValueToApi")
-            //userState.value = UserState.Success  // works even if not in a coroutine
-            userState.tryEmit(UserState.Success) // for use in coroutines, respects buffer
+            //userState.value = UserState.Success  // setting .value works even if not in a coroutine.
+            apiCallState.tryEmit(ApiCallState.Success)   // .tryEmit is used from coroutines, respects buffer.
         }
     }
 }
 
-sealed class UserState(val message: String) {
-    object StartState : UserState("Post Value to API")
-    object LoadingState : UserState("Posting...")
-    object Success : UserState("Success")
-    object Error : UserState("Error")
+sealed class ApiCallState(val message: String) {
+    object StartState : ApiCallState("Post Value to API")
+    object LoadingState : ApiCallState("Posting...")
+    object Success : ApiCallState("Success")
+    object Error : ApiCallState("Error")
 }
-
 
 @Composable
 fun Output(data: String) {
@@ -344,10 +373,10 @@ fun DefaultPreview() {
 }
 
 @Composable
-fun xmlInCompose(
+fun XmlInCompose(
     viewModel: MainViewModel,
     lifeCycleScope: LifecycleCoroutineScope,
-    userState: UserState
+    apiCallState: ApiCallState
 ) {
     AndroidView(factory = {
         View.inflate(it, R.layout.button_layout, null)
@@ -357,24 +386,31 @@ fun xmlInCompose(
             val button = it.findViewById<Button>(R.id.button)
             button.setOnClickListener { view ->
                 Toast.makeText(view.context, "Posting to Api", Toast.LENGTH_SHORT).show()
-//                lifeCycleScope.launch { // Problem: Call will be sent successfully, but if during a config change, the coroutine will be cancelled (not good)
-//                    viewModel.postValueToApi()
+
+//                // PROBLEM - DON'T DO THIS - Calling the suspending function from the UI lifecycle.
+//                lifeCycleScope.launch {  // lifeCycle Scope is the ACTIVITY/FRAGMENT lifecycle scope
+//                    viewModel.postValueToApi() // PROBLEM: Call will be sent successfully, but during a
+//                                               //   config change the coroutine will be cancelled, cancelling the API call.
 //                }
 
-                // Solution: Make the call in the coroutine scope of the ViewModel
-//                viewModel.postValueToApi(button)
-//                button.text = "Posting..."
-                viewModel.userState.value =
-                    UserState.LoadingState // ok to set directly bc we are not in a coroutine
-                // viewModel.userState.emit(UserState.LoadingState) // for use in coroutines
+                // EXAMPLE 1 - STILL A PROBLEM - DON'T DO THIS: This makes the call in the coroutine scope of the ViewModel, and passes in the button view.
+//                viewModel.postValueToApi1(button) // Notice this passes in the button View. PROBLEM: This exposes the ViewModel suspending function to the UI lifecycle.
+//                button.text = "Posting..."        // If a config change occurs, the ACTIVITY/FRAGMENT will be destroyed, and the `button` will be invalid.
 
-//                lifeCycleScope.launch {
-//                    button.text = viewModel.postValueToApi2() // gets value from the api call directly, problem: if config change values are reset.
-//                }
 
-                viewModel.postValueToApi3()
+//                // EXAMPLE 2 - STILL A PROBLEM - DON'T DO THIS: the value will not be returned from coroutine if the UI has a config change
+                lifeCycleScope.launch { // lifecycle scope of the ACTIVITY/FRAGMENT lifecycle scope
+                    button.text = viewModel.postValueToApi2() // Gets value from the api call as a return value OK, but PROBLEM: if a config change happens, values are reset.
+                }
+
+//                // EXAMPLE 3 - SOLUTION: Use a flow/Livedata instead of a return value.
+//                viewModel.apiCallState.value = ApiCallState.LoadingState // ok to set directly bc we are not in a coroutine.
+//                // viewModel.userState.emit(UserState.LoadingState) // can also use `emit`, but must be used in coroutines.
+//                viewModel.postValueToApi3()
             }
-            button.text = userState.message
+
+            // Show result of API call.
+            button.text = apiCallState.message
         }
     )
 }
