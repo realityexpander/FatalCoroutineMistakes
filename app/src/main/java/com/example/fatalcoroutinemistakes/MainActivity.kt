@@ -176,7 +176,7 @@ suspend fun getUserFirstNames(userIds: List<Int>): List<String> {
 }
 
 suspend fun getFirstName(userId: Int): String {
-    delay(500)
+    delay(Random.nextLong(1000))
     println("getFirstName: $userId")
     return "John $userId"
 }
